@@ -1,0 +1,442 @@
+#!/usr/local/bin/perl -w
+
+#
+# 9/3/2021 pdimop
+# 10/3/2021 ignore empty lines or comments that reset the buffers
+# 10/3/2021 ignore lines beginning with "echo" since they are comments for Alcatel
+# 11/3/2021 fixed bug missing filename on +childs
+# 16/3/2021 treat + and | as tab to pickup the banner
+# 26/3/2021 fix banner bug due to no chomping
+# 29/3/2021 make a sub
+# 29/3/2021 accept stdin
+# 31/3/2021 replace childs with children
+# 9/4/2021  support linedelimiter
+# 9/4/2021  when linedelimiter suppress spaces
+# 11/4/2021 allow newline in linedelimiter
+# 11/4/2021 hide all front whitespace when single line output
+# 15/4/2021 support network matching with -i
+# 16/4/2021 buf fix ip search
+# 16/4/2021 update error message with +ip
+# 16/4/2021 todo multiple networks on single line
+# 11/5/2021 when -ip support /masklen to minimum
+# 15/6/2021 support neighbor with only ip
+# 16/11/2021 support bfd destination for alcatel
+# 4/3/2021 support bfd destination for alcatel
+# 25/4/2022 bad mask handling
+#
+
+use strict;
+use warnings;
+
+$|++;
+
+my $linedelimiter = "\n";
+my $printchildren = 0;
+my $printfilename = 0;
+my $ipmatch       = 0;
+my $ipv6match     = 0;
+my $ipsubnetmatch = 1;
+
+while ( ( @ARGV > 0 ) && ( $ARGV[0] =~ /^[\-\+]/ ) ) {
+    my $option = shift;
+
+    if (   ( $option eq '-h' )
+        || ( $option eq '--help' )
+        || ( $option eq '-help' ) )
+    {
+        print "  indented grep\n";
+        print "       igrep [OPTIONS] PATTERN [FILE...]\n";
+        print "\n";
+        print "  options:\n";
+        print "     -help\n";
+        print "     -linedelimiter, -l\n";
+        print "     +children, +c  \n";
+        print "     -ipv4 ipmatching  \n";
+        print "     -ipv6 ipmatching  \n";
+
+        exit;
+    }
+    elsif (( $option eq '-linedelimiter' )
+        || ( $option eq '--linedelimiter' )
+        || ( $option eq '-l' ) )
+    {
+        $linedelimiter = shift;
+        $linedelimiter =~ s/\\n/\n/g;
+    }
+    elsif (( $option eq '+c' )
+        || ( $option eq '-childs' )
+        || ( $option eq '+childs' )
+        || ( $option eq '-children' )
+        || ( $option eq '+children' ) )
+    {
+        $printchildren = 1;
+    }
+    elsif (( $option eq '-i' )
+        || ( $option eq '+ip' )
+        || ( $option eq '+ipv4' )
+        || ( $option eq '-ipv4' )
+        || ( $option eq '-ip' ) )
+    {
+        $ipmatch = 1;
+    }
+    elsif (( $option eq '-ipv6' )
+        || ( $option eq '+ipv6' ) )
+    {
+        $ipv6match = 1;
+    }
+
+    else {
+        print "unknown option $option\n";
+        exit;
+    }
+
+}
+
+if ( @ARGV == 0 ) {
+    print "  indented grep\n";
+    print "       igrep [OPTIONS] PATTERN [FILE...]\n";
+    print "\n";
+    print "  options:\n";
+    print "     -help\n";
+    print "     -linedelimiter, -l\n";
+    print "     +children, +c  \n";
+    print "     -ipv4 ipmatching  \n";
+    print "     -ipv6 ipmatching  \n";
+
+    exit;
+}
+
+my $filter = shift @ARGV;
+
+if ( @ARGV > 1 ) { $printfilename = 1; }
+
+use NetAddr::IP;
+
+sub matchline($$) {
+    my $f = shift;
+    my $l = shift;
+
+    $l =~ s/^#.*//;
+    if ($ipmatch) {
+
+        my $minmask = 24;
+        if ( $f =~ /^(.*)\/(\d+)$/ ) {
+            $minmask = $2;
+            $f       = $1;
+        }
+
+        #warn $l;
+        $l =~ s/^#.*//;
+        if ( $l =~ /(\d+\.\d+\.\d+\.\d+)\/(\d+\.\d+\.\d+\.\d+)/ ) {
+
+            #warn $l;
+        }
+
+        elsif ( $l =~ /(\d+\.\d+\.\d+\.\d+)\/(\d+)/ ) {
+
+            #warn $l;
+            my $net  = $1;
+            my $mask = $2;
+            if ( $mask > 32 ) { $mask = 32; }
+            if ( $mask < 8 )  { $mask = 32; }
+            my $n = new NetAddr::IP $net, $mask;
+            my $i = new NetAddr::IP $f,   $minmask;
+
+            if ( $net eq '0.0.0.0' ) {
+                return 0;
+            }
+            if ( $net eq '10.0.0.0' ) {
+                return 0;
+            }
+            if ( $net eq '192.168.0.0' ) {
+                return 0;
+            }
+
+            if ( $i->within($n) ) {
+
+                #if ( $mask < $minmask ) {
+
+                #warn $l;
+                #return 0;
+                #}
+                return 1;
+            }
+
+        }
+        elsif ( $l =~ /(\d+\.\d+\.\d+\.\d+) (255\.\d+\.\d+\.\d+)/ ) {
+            my $net  = $1;
+            my $mask = $2;
+
+            #warn $net, ' ' ,$mask;
+            #1/4/2022 $mask =~ s/255.255.255.29$/255.255.255.0/;
+            my $n = new NetAddr::IP $net, $mask;
+            if ( !defined($n) ) {
+                warn "bad mask $mask at '$l`";
+                $n = new NetAddr::IP $net, 24;
+            }
+
+            my $i = new NetAddr::IP $f, $minmask;
+
+            if ( $net eq '0.0.0.0' ) {
+                return 0;
+            }
+            if ( $net eq '10.0.0.0' ) {
+                return 0;
+            }
+            if ( $net eq '192.168.0.0' ) {
+                return 0;
+            }
+            if ( $i->within($n) ) {
+                if ( $n->masklen < $minmask ) {
+
+                    #warn $l;
+                    return 0;
+                }
+                return 1;
+            }
+        }
+        elsif ( $l =~ / address-range (\d+\.\d+\.\d+\.\d+) (\d+\.\d+\.\d+\.\d+)/ ) {
+
+            #warn $l;
+            my $first = new NetAddr::IP $1, 32;
+            my $last  = new NetAddr::IP $2, 32;
+            my $i     = new NetAddr::IP $f, 32;
+
+            if ( ( $i >= $first ) && ( $i <= $last ) ) {
+                return 1;
+            }
+
+        }
+        elsif ( $l =~ /(\d+\.\d+\.\d+\.\d+) (0.\d+\.\d+\.\d+)/ ) {
+
+            #warn $l;
+
+            my $net  = $1;
+            my $mask = $2;
+            if    ( $mask eq '0.0.0.3' )      { $mask = 30; }
+            elsif ( $mask eq '0.0.0.7' )      { $mask = 29; }
+            elsif ( $mask eq '0.0.0.15' )     { $mask = 28; }
+            elsif ( $mask eq '0.0.0.31' )     { $mask = 27; }
+            elsif ( $mask eq '0.0.0.63' )     { $mask = 26; }
+            elsif ( $mask eq '0.0.0.127' )    { $mask = 25; }
+            elsif ( $mask eq '0.0.0.255' )    { $mask = 24; }
+            elsif ( $mask eq '0.0.1.\d+' )    { $mask = 23; }
+            elsif ( $mask eq '0.0.3.\d+' )    { $mask = 22; }
+            elsif ( $mask eq '0.0.7.\d+' )    { $mask = 21; }
+            elsif ( $mask eq '0.0.15.\d+' )   { $mask = 20; }
+            elsif ( $mask eq '0.0.31.\d+' )   { $mask = 19; }
+            elsif ( $mask eq '0.0.63.\d+' )   { $mask = 18; }
+            elsif ( $mask eq '0.0.127.\d+' )  { $mask = 17; }
+            elsif ( $mask eq '0.0.255.\d+' )  { $mask = 16; }
+            elsif ( $mask eq '0.1.\d+\.\d+' ) { $mask = 15; }
+            else {
+                #warn $l;
+                $mask = 32;
+            }
+
+            my $n = new NetAddr::IP $net, $mask;
+            my $i = new NetAddr::IP $f,   $minmask;
+
+            if ( $net eq '0.0.0.0' ) {
+                return 0;
+            }
+            if ( $i->within($n) ) {
+                if ( $mask < $minmask ) {
+
+                    #warn $l;
+                    return 0;
+                }
+                return 1;
+            }
+
+        }
+        elsif ( $l =~ /^\s+neighbor (\d+\.\d+\.\d+\.\d+)$/ ) {
+
+            my $net  = $1;
+            my $mask = 32;
+
+            my $n = new NetAddr::IP $net, $mask;
+            my $i = new NetAddr::IP $f,   $minmask;
+
+            if ( $net eq '0.0.0.0' ) {
+                return 0;
+            }
+            if ( $i->within($n) ) {
+                if ( $mask < $minmask ) {
+
+                    #warn $l;
+                    return 0;
+                }
+                return 1;
+            }
+
+        }
+        elsif ( $l =~ /\s+dst-ip (\d+\.\d+\.\d+\.\d+)$/ ) {
+            my $net  = $1;
+            my $mask = 32;
+
+            my $n = new NetAddr::IP $net, $mask;
+            my $i = new NetAddr::IP $f,   $minmask;
+
+            if ( $net eq '0.0.0.0' ) {
+                return 0;
+            }
+            if ( $n->within($i) ) {
+                if ( $mask < $minmask ) {
+
+                    #warn $l;
+                    return 0;
+                }
+                return 1;
+            }
+
+        }
+
+        return 0;
+    }
+    elsif ($ipv6match) {
+        if ( $l =~ /(2a02:[a-f0-9:]+\/\d+)/ ) {
+            my $n = new NetAddr::IP $f;
+            my $i = new NetAddr::IP $1;
+
+            if ( $n->within($i) ) {
+                return 1;
+            }
+
+            #warn "compare $n $i";
+            return 0;
+        }
+        elsif ( $l =~ /(2a02)/ ) {
+            return 0;
+        }
+        return 0;
+    }
+
+    else {
+        return grep( /$f/, $l );
+    }
+}
+
+sub dofilehandle($) {
+    my $file = shift;
+
+    my @buffer;
+    my $level        = 0;
+    my $pendingprint = 0;
+    my $activematch  = 10000;
+
+    my $FD;
+    if ( $file eq "" ) {
+        $FD = *STDIN;
+    }
+    else {
+        open( $FD, $file ) || die "error opening $file";
+    }
+    while ( my $line = <$FD> ) {
+        chomp($line);
+        if (   ( $line !~ /^$/ )
+            && ( $line !~ /^#/ )
+            && ( $line !~ /^echo / ) )
+        {
+
+            if ( $line =~ /^banner motd \^C$/ ) {
+                my $l = <$FD>;
+                chomp($l);
+                while ( $l !~ /^\^/ ) {
+                    $line .= "\n";
+                    $line .= $l;
+                    $l = <$FD>;
+                    chomp($l);
+                    if ( eof($FD) ) {
+                        warn "banner problem with $file";
+                        $l = '^C';
+                    }
+
+                }
+                $line .= "\n";
+                $line .= $l;
+            }
+            $level = 0;
+            if ( $line =~ /^(\+|\||\s*)/ ) {
+                $level = length($1);
+                $buffer[$level] = $line;
+
+                while ( @buffer > $level + 1 ) {
+                    pop @buffer;
+                }
+            }
+            if (   ( $activematch >= $level )
+                && ( $activematch < 10000 ) )
+            {
+                if ($pendingprint) { print "\n"; }
+                $pendingprint = 0;
+
+                #warn "$activematch $level";
+                #warn $line;
+                $activematch = 10000;
+            }
+            if ( matchline( $filter, $line ) ) {
+                $activematch = $level;
+                foreach ( 0 .. $level ) {
+                    if ( defined( $buffer[$_] ) ) {
+                        if ( $printfilename && ( $linedelimiter eq "\n" ) ) {
+                            print "$file:";
+                        }
+                        elsif ( $printfilename && ( $_ eq 0 ) ) {
+                            print "$file:";
+                        }
+
+                        my $out = $buffer[$_];
+                        if ( $linedelimiter ne "\n" ) {
+                            $out =~ s/^\s+//;
+                        }
+
+                        print $out;
+                        print $linedelimiter;
+                        if ( $linedelimiter ne "\n" ) {
+                            $pendingprint++;
+                        }
+                        else { $pendingprint = 0; }
+                    }
+                }
+            }
+            if ($printchildren) {
+                if ( $activematch < $level ) {
+                    if ( $printfilename && ( $linedelimiter eq "\n" ) ) {
+                        print "$file:";
+                    }
+                    my $out = $line;
+                    if ( $linedelimiter ne "\n" ) {
+                        $out =~ s/^\s+//;
+                    }
+
+                    print $out;
+                    print $linedelimiter;
+                    if ( $linedelimiter ne "\n" ) {
+                        $pendingprint++;
+                    }
+                    else { $pendingprint = 0; }
+                }
+            }
+        }
+    }
+
+    if ($pendingprint) { print "\n3\n"; $pendingprint = 0; }
+    close($FD);
+}
+
+if ( @ARGV == 0 ) {
+    dofilehandle("");
+}
+
+while (@ARGV) {
+    my $file = shift;
+
+    #warn $file;
+    if ( -e $file ) {
+        dofilehandle($file);
+    }
+    else {
+        print "file $file not found\n";
+    }
+}
